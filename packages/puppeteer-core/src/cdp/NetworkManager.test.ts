@@ -1,0 +1,3208 @@
+/**
+ * @license
+ * Copyright 2020 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import {describe, it} from 'node:test';
+
+import type {Protocol} from 'devtools-protocol';
+import expect from 'expect';
+
+import {
+  CDPSessionEvent,
+  type CDPSession,
+  type CDPSessionEvents,
+} from '../api/CDPSession.js';
+import type {HTTPRequest} from '../api/HTTPRequest.js';
+import type {HTTPResponse} from '../api/HTTPResponse.js';
+import type {WebWorker} from '../api/WebWorker.js';
+import {TargetCloseError} from '../common/Errors.js';
+import {EventEmitter} from '../common/EventEmitter.js';
+import {NetworkManagerEvent} from '../common/NetworkManagerEvents.js';
+
+import type {Connection} from './cdp.js';
+import type {CdpFrame} from './Frame.js';
+import {NetworkManager} from './NetworkManager.js';
+
+// TODO: develop a helper to generate fake network events for attributes that
+// are not relevant for the network manager to make tests shorter.
+
+function createNetworkManager(
+  worker: (client: CDPSession) => WebWorker | null = () => {
+    return null;
+  },
+) {
+  return new NetworkManager(
+    {
+      frame(): CdpFrame | null {
+        return null;
+      },
+      worker,
+      page() {
+        return {
+          browser() {
+            return {
+              userAgent() {
+                return 'user-agent';
+              },
+            };
+          },
+        } as any;
+      },
+    },
+    true,
+    () => {
+      return undefined;
+    },
+  );
+}
+
+class MockCDPSession extends EventEmitter<CDPSessionEvents> {
+  public closed?: boolean;
+  readonly sent: Array<{method: string; params: unknown}> = [];
+  constructor(readonly sessionId = '1') {
+    super();
+  }
+  async send(method: string, params?: unknown): Promise<any> {
+    this.sent.push({method, params});
+  }
+  connection() {
+    return this.closed ? ({_closed: true} as Connection) : undefined;
+  }
+  readonly detached = false;
+  async detach() {}
+  id() {
+    return this.sessionId;
+  }
+  parentSession() {
+    return undefined;
+  }
+}
+
+describe('NetworkManager', () => {
+  it('should process extra info on multiple redirects', async () => {
+    const mockCDPSession = new MockCDPSession();
+    const manager = createNetworkManager();
+    await manager.addClient(mockCDPSession);
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      loaderId: '7760711DEFCFA23132D98ABA6B4E175C',
+      documentURL: 'http://localhost:8907/redirect/1.html',
+      request: {
+        url: 'http://localhost:8907/redirect/1.html',
+        method: 'GET',
+        headers: {
+          'Upgrade-Insecure-Requests': '1',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/97.0.4691.0 Safari/537.36',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 2111.55635,
+      wallTime: 1637315638.473634,
+      initiator: {type: 'other'},
+      redirectHasExtraInfo: false,
+      type: 'Document',
+      frameId: '099A5216AF03AAFEC988F214B024DF08',
+      hasUserGesture: false,
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      associatedCookies: [],
+      headers: {
+        Host: 'localhost:8907',
+        Connection: 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/97.0.4691.0 Safari/537.36',
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-User': '?1',
+        'Sec-Fetch-Dest': 'document',
+        'Accept-Encoding': 'gzip, deflate, br',
+      },
+      connectTiming: {requestTime: 2111.557593},
+    });
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      blockedCookies: [],
+      headers: {
+        location: '/redirect/2.html',
+        Date: 'Fri, 19 Nov 2021 09:53:58 GMT',
+        Connection: 'keep-alive',
+        'Keep-Alive': 'timeout=5',
+        'Transfer-Encoding': 'chunked',
+      },
+      resourceIPAddressSpace: 'Local',
+      statusCode: 302,
+      headersText:
+        'HTTP/1.1 302 Found\r\nlocation: /redirect/2.html\r\nDate: Fri, 19 Nov 2021 09:53:58 GMT\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\nTransfer-Encoding: chunked\r\n\r\n',
+    });
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      loaderId: '7760711DEFCFA23132D98ABA6B4E175C',
+      documentURL: 'http://localhost:8907/redirect/2.html',
+      request: {
+        url: 'http://localhost:8907/redirect/2.html',
+        method: 'GET',
+        headers: {
+          'Upgrade-Insecure-Requests': '1',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/97.0.4691.0 Safari/537.36',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 2111.559124,
+      wallTime: 1637315638.47642,
+      initiator: {type: 'other'},
+      redirectHasExtraInfo: true,
+      redirectResponse: {
+        url: 'http://localhost:8907/redirect/1.html',
+        status: 302,
+        statusText: 'Found',
+        charset: 'utf-8',
+        headers: {
+          location: '/redirect/2.html',
+          Date: 'Fri, 19 Nov 2021 09:53:58 GMT',
+          Connection: 'keep-alive',
+          'Keep-Alive': 'timeout=5',
+          'Transfer-Encoding': 'chunked',
+        },
+        mimeType: '',
+        connectionReused: false,
+        connectionId: 322,
+        remoteIPAddress: '[::1]',
+        remotePort: 8907,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 162,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 2111.557593,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: 0.241,
+          dnsEnd: 0.251,
+          connectStart: 0.251,
+          connectEnd: 0.47,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 0.537,
+          sendEnd: 0.611,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 0.939,
+        },
+        responseTime: 1.637315638475744e12,
+        protocol: 'http/1.1',
+        securityState: 'secure',
+      },
+      type: 'Document',
+      frameId: '099A5216AF03AAFEC988F214B024DF08',
+      hasUserGesture: false,
+    });
+    mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      associatedCookies: [],
+      headers: {
+        Host: 'localhost:8907',
+        Connection: 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/97.0.4691.0 Safari/537.36',
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-User': '?1',
+        'Sec-Fetch-Dest': 'document',
+        'Accept-Encoding': 'gzip, deflate, br',
+      },
+      connectTiming: {requestTime: 2111.559346},
+    });
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      loaderId: '7760711DEFCFA23132D98ABA6B4E175C',
+      documentURL: 'http://localhost:8907/redirect/3.html',
+      request: {
+        url: 'http://localhost:8907/redirect/3.html',
+        method: 'GET',
+        headers: {
+          'Upgrade-Insecure-Requests': '1',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/97.0.4691.0 Safari/537.36',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 2111.560249,
+      wallTime: 1637315638.477543,
+      initiator: {type: 'other'},
+      redirectHasExtraInfo: true,
+      redirectResponse: {
+        url: 'http://localhost:8907/redirect/2.html',
+        status: 302,
+        statusText: 'Found',
+        charset: 'utf-8',
+        headers: {
+          location: '/redirect/3.html',
+          Date: 'Fri, 19 Nov 2021 09:53:58 GMT',
+          Connection: 'keep-alive',
+          'Keep-Alive': 'timeout=5',
+          'Transfer-Encoding': 'chunked',
+        },
+        mimeType: '',
+        connectionReused: true,
+        connectionId: 322,
+        remoteIPAddress: '[::1]',
+        remotePort: 8907,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 162,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 2111.559346,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: -1,
+          dnsEnd: -1,
+          connectStart: -1,
+          connectEnd: -1,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 0.15,
+          sendEnd: 0.196,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 0.507,
+        },
+        responseTime: 1.637315638477063e12,
+        protocol: 'http/1.1',
+        securityState: 'secure',
+      },
+      type: 'Document',
+      frameId: '099A5216AF03AAFEC988F214B024DF08',
+      hasUserGesture: false,
+    });
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      blockedCookies: [],
+      headers: {
+        location: '/redirect/3.html',
+        Date: 'Fri, 19 Nov 2021 09:53:58 GMT',
+        Connection: 'keep-alive',
+        'Keep-Alive': 'timeout=5',
+        'Transfer-Encoding': 'chunked',
+      },
+      resourceIPAddressSpace: 'Local',
+      statusCode: 302,
+      headersText:
+        'HTTP/1.1 302 Found\r\nlocation: /redirect/3.html\r\nDate: Fri, 19 Nov 2021 09:53:58 GMT\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\nTransfer-Encoding: chunked\r\n\r\n',
+    });
+    mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      associatedCookies: [],
+      headers: {
+        Host: 'localhost:8907',
+        Connection: 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/97.0.4691.0 Safari/537.36',
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-User': '?1',
+        'Sec-Fetch-Dest': 'document',
+        'Accept-Encoding': 'gzip, deflate, br',
+      },
+      connectTiming: {requestTime: 2111.560482},
+    });
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      loaderId: '7760711DEFCFA23132D98ABA6B4E175C',
+      documentURL: 'http://localhost:8907/empty.html',
+      request: {
+        url: 'http://localhost:8907/empty.html',
+        method: 'GET',
+        headers: {
+          'Upgrade-Insecure-Requests': '1',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/97.0.4691.0 Safari/537.36',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 2111.561542,
+      wallTime: 1637315638.478837,
+      initiator: {type: 'other'},
+      redirectHasExtraInfo: true,
+      redirectResponse: {
+        url: 'http://localhost:8907/redirect/3.html',
+        status: 302,
+        statusText: 'Found',
+        charset: 'utf-8',
+        headers: {
+          location: 'http://localhost:8907/empty.html',
+          Date: 'Fri, 19 Nov 2021 09:53:58 GMT',
+          Connection: 'keep-alive',
+          'Keep-Alive': 'timeout=5',
+          'Transfer-Encoding': 'chunked',
+        },
+        mimeType: '',
+        connectionReused: true,
+        connectionId: 322,
+        remoteIPAddress: '[::1]',
+        remotePort: 8907,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 178,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 2111.560482,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: -1,
+          dnsEnd: -1,
+          connectStart: -1,
+          connectEnd: -1,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 0.149,
+          sendEnd: 0.198,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 0.478,
+        },
+        responseTime: 1.637315638478184e12,
+        protocol: 'http/1.1',
+        securityState: 'secure',
+      },
+      type: 'Document',
+      frameId: '099A5216AF03AAFEC988F214B024DF08',
+      hasUserGesture: false,
+    });
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      blockedCookies: [],
+      headers: {
+        location: 'http://localhost:8907/empty.html',
+        Date: 'Fri, 19 Nov 2021 09:53:58 GMT',
+        Connection: 'keep-alive',
+        'Keep-Alive': 'timeout=5',
+        'Transfer-Encoding': 'chunked',
+      },
+      resourceIPAddressSpace: 'Local',
+      statusCode: 302,
+      headersText:
+        'HTTP/1.1 302 Found\r\nlocation: http://localhost:8907/empty.html\r\nDate: Fri, 19 Nov 2021 09:53:58 GMT\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\nTransfer-Encoding: chunked\r\n\r\n',
+    });
+    mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      associatedCookies: [],
+      headers: {
+        Host: 'localhost:8907',
+        Connection: 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/97.0.4691.0 Safari/537.36',
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-User': '?1',
+        'Sec-Fetch-Dest': 'document',
+        'Accept-Encoding': 'gzip, deflate, br',
+      },
+      connectTiming: {requestTime: 2111.561759},
+    });
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      blockedCookies: [],
+      headers: {
+        'Cache-Control': 'no-cache, no-store',
+        'Content-Type': 'text/html; charset=utf-8',
+        Date: 'Fri, 19 Nov 2021 09:53:58 GMT',
+        Connection: 'keep-alive',
+        'Keep-Alive': 'timeout=5',
+        'Content-Length': '0',
+      },
+      resourceIPAddressSpace: 'Local',
+      statusCode: 200,
+      headersText:
+        'HTTP/1.1 200 OK\r\nCache-Control: no-cache, no-store\r\nContent-Type: text/html; charset=utf-8\r\nDate: Fri, 19 Nov 2021 09:53:58 GMT\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\nContent-Length: 0\r\n\r\n',
+    });
+    mockCDPSession.emit('Network.responseReceived', {
+      requestId: '7760711DEFCFA23132D98ABA6B4E175C',
+      loaderId: '7760711DEFCFA23132D98ABA6B4E175C',
+      timestamp: 2111.563565,
+      type: 'Document',
+      response: {
+        url: 'http://localhost:8907/empty.html',
+        status: 200,
+        statusText: 'OK',
+        headers: {
+          'Cache-Control': 'no-cache, no-store',
+          'Content-Type': 'text/html; charset=utf-8',
+          Date: 'Fri, 19 Nov 2021 09:53:58 GMT',
+          Connection: 'keep-alive',
+          'Keep-Alive': 'timeout=5',
+          'Content-Length': '0',
+        },
+        charset: 'utf-8',
+        mimeType: 'text/html',
+        connectionReused: true,
+        connectionId: 322,
+        remoteIPAddress: '[::1]',
+        remotePort: 8907,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 197,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 2111.561759,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: -1,
+          dnsEnd: -1,
+          connectStart: -1,
+          connectEnd: -1,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 0.148,
+          sendEnd: 0.19,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 0.925,
+        },
+        responseTime: 1.637315638479928e12,
+        protocol: 'http/1.1',
+        securityState: 'secure',
+      },
+      hasExtraInfo: true,
+      frameId: '099A5216AF03AAFEC988F214B024DF08',
+    });
+  });
+  describe('worker requests', () => {
+    const workerRequestWillBeSent = (
+      requestId: string,
+      url: string,
+      redirectResponse?: {url: string; status: number},
+    ): Protocol.Network.RequestWillBeSentEvent => {
+      return {
+        requestId,
+        loaderId: '',
+        documentURL: 'http://localhost:8907/worker/worker.js',
+        request: {
+          url,
+          method: 'GET',
+          headers: {},
+          mixedContentType: 'none',
+          initialPriority: 'High',
+          referrerPolicy: 'strict-origin-when-cross-origin',
+          isSameSite: true,
+        },
+        timestamp: 1,
+        wallTime: 1,
+        initiator: {type: 'script'},
+        redirectHasExtraInfo: false,
+        type: 'Fetch',
+        hasUserGesture: false,
+        ...(redirectResponse
+          ? {
+              redirectResponse: {
+                url: redirectResponse.url,
+                status: redirectResponse.status,
+                statusText: 'Found',
+                headers: {},
+                mimeType: '',
+                charset: '',
+                connectionReused: false,
+                connectionId: 0,
+                encodedDataLength: 0,
+                securityState: 'secure',
+              },
+            }
+          : {}),
+      };
+    };
+    const workerRequestPaused = (
+      fetchRequestId: string,
+      networkId: string,
+      url: string,
+    ): Protocol.Fetch.RequestPausedEvent => {
+      return {
+        requestId: fetchRequestId,
+        request: {
+          url,
+          method: 'GET',
+          headers: {},
+          initialPriority: 'High',
+          referrerPolicy: 'strict-origin-when-cross-origin',
+        },
+        frameId: '84AC261A351B86932B775B76D1DD79F8',
+        resourceType: 'Fetch',
+        networkId,
+      };
+    };
+
+    const setup = async ({interception = true} = {}) => {
+      const pageSession = new MockCDPSession('page');
+      const workerSession = new MockCDPSession('worker');
+      const worker = {client: workerSession} as unknown as WebWorker;
+      const manager = createNetworkManager(client => {
+        return client === workerSession ? worker : null;
+      });
+      await manager.addClient(pageSession);
+      await manager.addClient(workerSession);
+      if (interception) {
+        await manager.setRequestInterception(true);
+      }
+      pageSession.sent.length = 0;
+      workerSession.sent.length = 0;
+
+      const requests: HTTPRequest[] = [];
+      manager.on(NetworkManagerEvent.Request, async (request: HTTPRequest) => {
+        requests.push(request);
+        if (interception) {
+          await request.continue();
+        }
+      });
+      const failed: HTTPRequest[] = [];
+      manager.on(NetworkManagerEvent.RequestFailed, (request: HTTPRequest) => {
+        failed.push(request);
+      });
+      return {manager, pageSession, workerSession, worker, requests, failed};
+    };
+
+    it('should report the worker when Fetch.requestPaused arrives first', async () => {
+      const {pageSession, workerSession, worker, requests} = await setup();
+      const url = 'http://localhost:8907/empty.html';
+
+      pageSession.emit(
+        'Fetch.requestPaused',
+        workerRequestPaused('interception-job-1.0', 'worker-req-1', url),
+      );
+      workerSession.emit(
+        'Network.requestWillBeSent',
+        workerRequestWillBeSent('worker-req-1', url),
+      );
+      await new Promise(resolve => {
+        return setTimeout(resolve, 0);
+      });
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.worker()).toBe(worker);
+      expect(requests[0]!.frame()).toBeNull();
+      expect(requests[0]!.client).toBe(workerSession);
+      expect(
+        pageSession.sent.filter(({method}) => {
+          return method === 'Fetch.continueRequest';
+        }),
+      ).toHaveLength(1);
+      expect(
+        workerSession.sent.filter(({method}) => {
+          return method === 'Fetch.continueRequest';
+        }),
+      ).toHaveLength(0);
+    });
+
+    it('should keep the worker across redirects', async () => {
+      const {pageSession, workerSession, worker, requests} = await setup();
+      const url1 = 'http://localhost:8907/redirect/1.html';
+      const url2 = 'http://localhost:8907/redirect/2.html';
+
+      workerSession.emit(
+        'Network.requestWillBeSent',
+        workerRequestWillBeSent('worker-req-1', url1),
+      );
+      pageSession.emit(
+        'Fetch.requestPaused',
+        workerRequestPaused('interception-job-1.0', 'worker-req-1', url1),
+      );
+      workerSession.emit(
+        'Network.requestWillBeSent',
+        workerRequestWillBeSent('worker-req-1', url2, {url: url1, status: 302}),
+      );
+      pageSession.emit(
+        'Fetch.requestPaused',
+        workerRequestPaused('interception-job-2.0', 'worker-req-1', url2),
+      );
+      await new Promise(resolve => {
+        return setTimeout(resolve, 0);
+      });
+
+      expect(requests).toHaveLength(2);
+      expect(requests[1]!.url()).toBe(url2);
+      expect(requests[1]!.worker()).toBe(worker);
+      expect(requests[1]!.redirectChain()).toHaveLength(1);
+    });
+
+    it('should not fail pending worker requests when the whole connection closes', async () => {
+      const {manager, workerSession, requests, failed} = await setup({
+        interception: false,
+      });
+      workerSession.emit(
+        'Network.requestWillBeSent',
+        workerRequestWillBeSent('worker-req-1', 'http://localhost/hang'),
+      );
+      expect(requests).toHaveLength(1);
+      expect(manager.inFlightRequestsCount()).toBe(1);
+
+      workerSession.closed = true;
+      workerSession.emit(CDPSessionEvent.Disconnected, undefined);
+
+      expect(failed).toEqual([]);
+      expect(manager.inFlightRequestsCount()).toBe(0);
+    });
+
+    it('should fail pending requests when the worker session disconnects', async () => {
+      const {manager, workerSession, requests, failed} = await setup({
+        interception: false,
+      });
+
+      workerSession.emit(
+        'Network.requestWillBeSent',
+        workerRequestWillBeSent('worker-req-1', 'http://localhost/hang'),
+      );
+      expect(requests).toHaveLength(1);
+      expect(manager.inFlightRequestsCount()).toBe(1);
+
+      workerSession.emit(CDPSessionEvent.Disconnected, undefined);
+
+      expect(failed).toEqual([requests[0]]);
+      expect(failed[0]!.failure()).toEqual({errorText: 'net::ERR_ABORTED'});
+      expect(manager.inFlightRequestsCount()).toBe(0);
+    });
+
+    it('should not fail pending page requests when a session disconnects', async () => {
+      const {manager, pageSession, requests, failed} = await setup({
+        interception: false,
+      });
+
+      pageSession.emit(
+        'Network.requestWillBeSent',
+        workerRequestWillBeSent('page-req-1', 'http://localhost/hang'),
+      );
+      pageSession.emit(CDPSessionEvent.Disconnected, undefined);
+
+      expect(requests).toHaveLength(1);
+      expect(failed).toHaveLength(0);
+      expect(manager.inFlightRequestsCount()).toBe(1);
+    });
+
+    it('should not emit requestfailed for worker requests that were never surfaced', async () => {
+      const {workerSession, requests, failed} = await setup();
+
+      // With interception enabled, no request is emitted until
+      // Fetch.requestPaused arrives, which never happens here.
+      workerSession.emit(
+        'Network.requestWillBeSent',
+        workerRequestWillBeSent('worker-req-1', 'http://localhost/hang'),
+      );
+      workerSession.emit(CDPSessionEvent.Disconnected, undefined);
+
+      expect(requests).toHaveLength(0);
+      expect(failed).toHaveLength(0);
+    });
+  });
+
+  it(`should handle "double pause" (crbug.com/1196004) Fetch.requestPaused events for the same Network.requestWillBeSent event`, async () => {
+    const mockCDPSession = new MockCDPSession();
+    const manager = createNetworkManager();
+    await manager.addClient(mockCDPSession);
+    await manager.setRequestInterception(true);
+
+    const requests: HTTPRequest[] = [];
+    manager.on(NetworkManagerEvent.Request, async (request: HTTPRequest) => {
+      requests.push(request);
+      await request.continue();
+    });
+
+    /**
+     * This sequence was taken from an actual CDP session produced by the following
+     * test script:
+     *
+     * ```ts
+     * const browser = await puppeteer.launch({headless: false});
+     * const page = await browser.newPage();
+     * await page.setCacheEnabled(false);
+     *
+     * await page.setRequestInterception(true);
+     * page.on('request', interceptedRequest => {
+     *   interceptedRequest.continue();
+     * });
+     *
+     * await page.goto('https://www.google.com');
+     * await browser.close();
+     * ```
+     */
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '11ACE9783588040D644B905E8B55285B',
+      loaderId: '11ACE9783588040D644B905E8B55285B',
+      documentURL: 'https://www.google.com/',
+      request: {
+        url: 'https://www.google.com/',
+        method: 'GET',
+        headers: {},
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 224604.980827,
+      wallTime: 1637955746.786191,
+      initiator: {type: 'other'},
+      redirectHasExtraInfo: false,
+      type: 'Document',
+      frameId: '84AC261A351B86932B775B76D1DD79F8',
+      hasUserGesture: false,
+    });
+    mockCDPSession.emit('Fetch.requestPaused', {
+      requestId: 'interception-job-1.0',
+      request: {
+        url: 'https://www.google.com/',
+        method: 'GET',
+        headers: {},
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      },
+      frameId: '84AC261A351B86932B775B76D1DD79F8',
+      resourceType: 'Document',
+      networkId: '11ACE9783588040D644B905E8B55285B',
+    });
+    mockCDPSession.emit('Fetch.requestPaused', {
+      requestId: 'interception-job-2.0',
+      request: {
+        url: 'https://www.google.com/',
+        method: 'GET',
+        headers: {},
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      },
+      frameId: '84AC261A351B86932B775B76D1DD79F8',
+      resourceType: 'Document',
+      networkId: '11ACE9783588040D644B905E8B55285B',
+    });
+
+    expect(requests).toHaveLength(1);
+  });
+  it(`should intercept the request on the session that paused it (github.com/puppeteer/puppeteer/issues/15509)`, async () => {
+    const pageSession = new MockCDPSession();
+    const workerSession = new MockCDPSession();
+    const pageCommands: string[] = [];
+    const workerCommands: string[] = [];
+    pageSession.send = (async (method: string) => {
+      pageCommands.push(method);
+    }) as any;
+    workerSession.send = (async (method: string) => {
+      workerCommands.push(method);
+    }) as any;
+    const manager = createNetworkManager();
+    await manager.addClient(pageSession);
+    await manager.addClient(workerSession);
+    await manager.setRequestInterception(true);
+
+    let aborted!: Promise<void>;
+    let postData!: Promise<string | undefined>;
+    manager.on(NetworkManagerEvent.Request, (request: HTTPRequest) => {
+      aborted = request.abort();
+      postData = request.fetchPostData();
+    });
+    pageCommands.length = 0;
+    workerCommands.length = 0;
+
+    pageSession.emit('Fetch.requestPaused', {
+      requestId: 'interception-job-1.0',
+      request: {
+        url: 'http://localhost:8907/post-1',
+        method: 'POST',
+        headers: {},
+        initialPriority: 'High',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      },
+      frameId: '84AC261A351B86932B775B76D1DD79F8',
+      resourceType: 'Fetch',
+      networkId: '58462.1',
+    });
+    workerSession.emit('Network.requestWillBeSent', {
+      requestId: '58462.1',
+      loaderId: '',
+      documentURL: 'http://localhost:8907/worker.js',
+      request: {
+        url: 'http://localhost:8907/post-1',
+        method: 'POST',
+        headers: {},
+        mixedContentType: 'none',
+        initialPriority: 'High',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 224604.980827,
+      wallTime: 1637955746.786191,
+      initiator: {type: 'script'},
+      redirectHasExtraInfo: false,
+      type: 'Fetch',
+      hasUserGesture: false,
+    });
+    await Promise.all([aborted, postData]);
+
+    expect(pageCommands).toEqual(['Fetch.failRequest']);
+    expect(workerCommands).toEqual(['Network.getRequestPostData']);
+  });
+  it(`should send Fetch commands to the pausing session and Network commands to the request session`, async () => {
+    const pageSession = new MockCDPSession();
+    const workerSession = new MockCDPSession();
+    const pageCommands: string[] = [];
+    const workerCommands: string[] = [];
+    pageSession.send = (async (method: string) => {
+      pageCommands.push(method);
+    }) as any;
+    workerSession.send = (async (method: string) => {
+      workerCommands.push(method);
+    }) as any;
+    const manager = createNetworkManager();
+    await manager.addClient(pageSession);
+    await manager.addClient(workerSession);
+    await manager.setRequestInterception(true);
+
+    let continued!: Promise<void>;
+    let postData!: Promise<string | undefined>;
+    manager.on(NetworkManagerEvent.Request, (request: HTTPRequest) => {
+      continued = request.continue();
+      postData = request.fetchPostData();
+    });
+    pageCommands.length = 0;
+    workerCommands.length = 0;
+
+    workerSession.emit('Network.requestWillBeSent', {
+      requestId: '58462.1',
+      loaderId: '',
+      documentURL: 'http://localhost:8907/worker.js',
+      request: {
+        url: 'http://localhost:8907/post-1',
+        method: 'POST',
+        headers: {},
+        mixedContentType: 'none',
+        initialPriority: 'High',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 224604.980827,
+      wallTime: 1637955746.786191,
+      initiator: {type: 'script'},
+      redirectHasExtraInfo: false,
+      type: 'Fetch',
+      hasUserGesture: false,
+    });
+    pageSession.emit('Fetch.requestPaused', {
+      requestId: 'interception-job-1.0',
+      request: {
+        url: 'http://localhost:8907/post-1',
+        method: 'POST',
+        headers: {},
+        initialPriority: 'High',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      },
+      frameId: '84AC261A351B86932B775B76D1DD79F8',
+      resourceType: 'Fetch',
+      networkId: '58462.1',
+    });
+    await Promise.all([continued, postData]);
+
+    expect(pageCommands).toEqual(['Fetch.continueRequest']);
+    expect(workerCommands).toEqual(['Network.getRequestPostData']);
+  });
+  it(`should intercept a redirect on the session that paused it when its extra info arrives late`, async () => {
+    const pageSession = new MockCDPSession();
+    const workerSession = new MockCDPSession();
+    const pageCommands: string[] = [];
+    const workerCommands: string[] = [];
+    pageSession.send = (async (method: string) => {
+      pageCommands.push(method);
+    }) as any;
+    workerSession.send = (async (method: string) => {
+      workerCommands.push(method);
+    }) as any;
+    const manager = createNetworkManager();
+    await manager.addClient(pageSession);
+    await manager.addClient(workerSession);
+    await manager.setRequestInterception(true);
+
+    const continued: Array<Promise<void>> = [];
+    manager.on(NetworkManagerEvent.Request, (request: HTTPRequest) => {
+      continued.push(request.continue());
+    });
+
+    const requestWillBeSent = {
+      requestId: '58462.1',
+      loaderId: '',
+      documentURL: 'http://localhost:8907/worker.js',
+      timestamp: 224604.980827,
+      wallTime: 1637955746.786191,
+      initiator: {type: 'script'},
+      type: 'Fetch',
+      hasUserGesture: false,
+    } as const;
+    const request = {
+      method: 'GET',
+      headers: {},
+      initialPriority: 'High',
+      referrerPolicy: 'strict-origin-when-cross-origin',
+    } as const;
+
+    workerSession.emit('Network.requestWillBeSent', {
+      ...requestWillBeSent,
+      request: {
+        ...request,
+        url: 'http://localhost:8907/redirect',
+        mixedContentType: 'none',
+        isSameSite: true,
+      },
+      redirectHasExtraInfo: false,
+    });
+    pageSession.emit('Fetch.requestPaused', {
+      requestId: 'interception-job-1.0',
+      request: {...request, url: 'http://localhost:8907/redirect'},
+      frameId: '84AC261A351B86932B775B76D1DD79F8',
+      resourceType: 'Fetch',
+      networkId: '58462.1',
+    });
+    pageSession.emit('Fetch.requestPaused', {
+      requestId: 'interception-job-2.0',
+      request: {...request, url: 'http://localhost:8907/empty.html'},
+      frameId: '84AC261A351B86932B775B76D1DD79F8',
+      resourceType: 'Fetch',
+      networkId: '58462.1',
+    });
+    workerSession.emit('Network.requestWillBeSent', {
+      ...requestWillBeSent,
+      request: {
+        ...request,
+        url: 'http://localhost:8907/empty.html',
+        mixedContentType: 'none',
+        isSameSite: true,
+      },
+      redirectHasExtraInfo: true,
+      redirectResponse: {
+        url: 'http://localhost:8907/redirect',
+        status: 302,
+        statusText: 'Found',
+        headers: {location: '/empty.html'},
+        mimeType: '',
+        charset: '',
+        connectionReused: false,
+        connectionId: 1,
+        encodedDataLength: 100,
+        securityState: 'secure',
+      },
+    });
+    workerSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: '58462.1',
+      blockedCookies: [],
+      headers: {location: '/empty.html'},
+      resourceIPAddressSpace: 'Local',
+      statusCode: 302,
+      cookiePartitionKeyOpaque: false,
+      exemptedCookies: [],
+    });
+    await Promise.all(continued);
+
+    expect(continued).toHaveLength(2);
+    expect(
+      pageCommands.filter(method => {
+        return method === 'Fetch.continueRequest';
+      }),
+    ).toHaveLength(2);
+    expect(workerCommands).not.toContain('Fetch.continueRequest');
+  });
+  describe('restarted requests (crbug.com/1196004)', () => {
+    const networkId = '3C6E9E2A5D1B4F3F5E8C0B1A2D3E4F50';
+    const frameId = '84AC261A351B86932B775B76D1DD79F8';
+    const fontRequest = {
+      url: 'https://example.com/fonts/font.woff2',
+      method: 'GET',
+      headers: {},
+      initialPriority: 'VeryHigh',
+      referrerPolicy: 'strict-origin-when-cross-origin',
+    } as const;
+
+    function emitRequestWillBeSent(
+      mockCDPSession: MockCDPSession,
+      {
+        redirectResponse,
+        request = fontRequest,
+      }: {
+        redirectResponse?: Protocol.Network.Response;
+        request?: Protocol.Fetch.RequestPausedEvent['request'];
+      } = {},
+    ) {
+      mockCDPSession.emit('Network.requestWillBeSent', {
+        requestId: networkId,
+        loaderId: '11ACE9783588040D644B905E8B55285B',
+        documentURL: 'https://example.com/',
+        request: {...request, mixedContentType: 'none', isSameSite: true},
+        timestamp: 224604.980827,
+        wallTime: 1637955746.786191,
+        initiator: {type: 'parser', url: 'https://example.com/style.css'},
+        redirectHasExtraInfo: false,
+        redirectResponse,
+        type: 'Font',
+        frameId,
+        hasUserGesture: false,
+      });
+    }
+
+    function emitRequestPaused(
+      mockCDPSession: MockCDPSession,
+      requestId: string,
+      overrides: Partial<Protocol.Fetch.RequestPausedEvent> = {},
+    ) {
+      mockCDPSession.emit('Fetch.requestPaused', {
+        requestId,
+        request: fontRequest,
+        frameId,
+        resourceType: 'Font',
+        networkId,
+        ...overrides,
+      });
+    }
+
+    function finishRequest(mockCDPSession: MockCDPSession) {
+      mockCDPSession.emit('Network.responseReceived', {
+        requestId: networkId,
+        loaderId: '11ACE9783588040D644B905E8B55285B',
+        timestamp: 224605.0,
+        type: 'Font',
+        response: {
+          url: fontRequest.url,
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          mimeType: 'font/woff2',
+          charset: '',
+          connectionReused: false,
+          connectionId: 1,
+          encodedDataLength: 100,
+          securityState: 'secure',
+        },
+        hasExtraInfo: false,
+        frameId,
+      });
+      mockCDPSession.emit('Network.loadingFinished', {
+        requestId: networkId,
+        timestamp: 224605.1,
+        encodedDataLength: 100,
+      });
+    }
+
+    async function setup(onRequest: (request: HTTPRequest) => Promise<void>) {
+      const commands: Array<{method: string; params: unknown}> = [];
+      const mockCDPSession = new MockCDPSession();
+      mockCDPSession.send = (async (method: string, params: unknown) => {
+        commands.push({method, params});
+      }) as any;
+      const manager = createNetworkManager();
+      await manager.addClient(mockCDPSession);
+      await manager.setRequestInterception(true);
+
+      const requests: HTTPRequest[] = [];
+      const finished: HTTPRequest[] = [];
+      manager.on(NetworkManagerEvent.Request, async (request: HTTPRequest) => {
+        requests.push(request);
+        await onRequest(request);
+      });
+      manager.on(
+        NetworkManagerEvent.RequestFinished,
+        (request: HTTPRequest) => {
+          finished.push(request);
+        },
+      );
+
+      return {
+        manager,
+        mockCDPSession,
+        requests,
+        finished,
+        sent(method: string) {
+          return commands
+            .filter(command => {
+              return command.method === method;
+            })
+            .map(command => {
+              return command.params;
+            });
+        },
+      };
+    }
+
+    it('should continue the restarted request with the same overrides', async () => {
+      const headers = {'x-test': '1'};
+      const {mockCDPSession, requests, finished, sent} = await setup(
+        async request => {
+          await request.continue({headers});
+        },
+      );
+
+      emitRequestWillBeSent(mockCDPSession);
+      emitRequestPaused(mockCDPSession, 'interception-job-1.0');
+      emitRequestPaused(mockCDPSession, 'interception-job-2.0');
+      finishRequest(mockCDPSession);
+
+      expect(requests).toHaveLength(1);
+      expect(sent('Fetch.continueRequest')).toEqual([
+        {
+          requestId: 'interception-job-1.0',
+          headers: [{name: 'x-test', value: '1'}],
+        },
+        {
+          requestId: 'interception-job-2.0',
+          headers: [{name: 'x-test', value: '1'}],
+        },
+      ]);
+      expect(
+        finished.map(r => {
+          return r.url();
+        }),
+      ).toEqual([fontRequest.url]);
+    });
+
+    it('should detect the restart when the URL and method were overridden', async () => {
+      const url = 'https://example.com/fonts/other.woff2';
+      const method = 'POST';
+      const {mockCDPSession, requests, finished, sent} = await setup(
+        async request => {
+          await request.continue({url, method});
+        },
+      );
+
+      emitRequestWillBeSent(mockCDPSession);
+      emitRequestPaused(mockCDPSession, 'interception-job-1.0');
+      // Chrome pauses the restarted request with the overridden URL and
+      // method.
+      emitRequestPaused(mockCDPSession, 'interception-job-2.0', {
+        request: {...fontRequest, url, method},
+      });
+      finishRequest(mockCDPSession);
+
+      expect(requests).toHaveLength(1);
+      expect(sent('Fetch.continueRequest')).toEqual([
+        {requestId: 'interception-job-1.0', url, method},
+        {requestId: 'interception-job-2.0', url, method},
+      ]);
+      expect(
+        finished.map(r => {
+          return r.url();
+        }),
+      ).toEqual([fontRequest.url]);
+    });
+
+    it('should not mistake a same-URL redirect for a restart', async () => {
+      const {mockCDPSession, requests, finished, sent} = await setup(
+        async request => {
+          await request.continue();
+        },
+      );
+
+      emitRequestWillBeSent(mockCDPSession);
+      emitRequestPaused(mockCDPSession, 'interception-job-1.0');
+      // The redirect's Fetch.requestPaused can arrive before its
+      // Network.requestWillBeSent.
+      emitRequestPaused(mockCDPSession, 'interception-job-2.0', {
+        redirectedRequestId: 'interception-job-1.0',
+      });
+      emitRequestWillBeSent(mockCDPSession, {
+        redirectResponse: {
+          url: fontRequest.url,
+          status: 307,
+          statusText: 'Temporary Redirect',
+          headers: {location: fontRequest.url},
+          mimeType: '',
+          charset: '',
+          connectionReused: false,
+          connectionId: 1,
+          encodedDataLength: 100,
+          securityState: 'secure',
+        },
+      });
+      finishRequest(mockCDPSession);
+
+      expect(requests).toHaveLength(2);
+      expect(requests[1]!.redirectChain()).toEqual([requests[0]]);
+      expect(sent('Fetch.continueRequest')).toEqual([
+        {requestId: 'interception-job-1.0'},
+        {requestId: 'interception-job-2.0'},
+      ]);
+      expect(
+        finished.map(r => {
+          return r.response()?.status();
+        }),
+      ).toEqual([307, 200]);
+    });
+    it('should detect the restart when the URL has a fragment', async () => {
+      // CDP reports the fragment separately from the URL.
+      const fragmentRequest = {
+        ...fontRequest,
+        url: 'https://example.com/fonts/font.eot?',
+        urlFragment: '#iefix',
+      };
+      const {mockCDPSession, requests, finished, sent} = await setup(
+        async request => {
+          await request.continue();
+        },
+      );
+
+      emitRequestWillBeSent(mockCDPSession, {request: fragmentRequest});
+      emitRequestPaused(mockCDPSession, 'interception-job-1.0', {
+        request: fragmentRequest,
+      });
+      emitRequestPaused(mockCDPSession, 'interception-job-2.0', {
+        request: fragmentRequest,
+      });
+      finishRequest(mockCDPSession);
+
+      expect(requests).toHaveLength(1);
+      expect(sent('Fetch.continueRequest')).toEqual([
+        {requestId: 'interception-job-1.0'},
+        {requestId: 'interception-job-2.0'},
+      ]);
+      expect(
+        finished.map(r => {
+          return r.url();
+        }),
+      ).toEqual(['https://example.com/fonts/font.eot?#iefix']);
+    });
+
+    it('should detect the restart when it pauses the original URL despite an override', async () => {
+      const url = 'https://example.com/fonts/other.woff2';
+      const {mockCDPSession, requests, sent} = await setup(async request => {
+        await request.continue({url});
+      });
+
+      emitRequestWillBeSent(mockCDPSession);
+      emitRequestPaused(mockCDPSession, 'interception-job-1.0');
+      emitRequestPaused(mockCDPSession, 'interception-job-2.0');
+      finishRequest(mockCDPSession);
+
+      expect(requests).toHaveLength(1);
+      expect(sent('Fetch.continueRequest')).toEqual([
+        {requestId: 'interception-job-1.0', url},
+        {requestId: 'interception-job-2.0', url},
+      ]);
+    });
+
+    it('should respond to the restarted request when the user responded', async () => {
+      const {mockCDPSession, requests, sent} = await setup(async request => {
+        await request.respond({status: 200, body: 'font'});
+      });
+
+      emitRequestWillBeSent(mockCDPSession);
+      emitRequestPaused(mockCDPSession, 'interception-job-1.0');
+      emitRequestPaused(mockCDPSession, 'interception-job-2.0');
+
+      expect(requests).toHaveLength(1);
+      expect(
+        sent('Fetch.fulfillRequest').map(params => {
+          return (params as Protocol.Fetch.FulfillRequestRequest).requestId;
+        }),
+      ).toEqual(['interception-job-1.0', 'interception-job-2.0']);
+      expect(sent('Fetch.continueRequest')).toEqual([]);
+    });
+
+    it('should respond to the restarted request when the user responded cooperatively', async () => {
+      const {mockCDPSession, requests, sent} = await setup(async request => {
+        await request.respond({status: 200, body: 'font'}, 0);
+      });
+
+      emitRequestWillBeSent(mockCDPSession);
+      emitRequestPaused(mockCDPSession, 'interception-job-1.0');
+      // Cooperative intercepts resolve after the request handlers settle.
+      await new Promise(resolve => {
+        return setTimeout(resolve, 0);
+      });
+      emitRequestPaused(mockCDPSession, 'interception-job-2.0');
+
+      expect(requests).toHaveLength(1);
+      expect(
+        sent('Fetch.fulfillRequest').map(params => {
+          return (params as Protocol.Fetch.FulfillRequestRequest).requestId;
+        }),
+      ).toEqual(['interception-job-1.0', 'interception-job-2.0']);
+      expect(sent('Fetch.continueRequest')).toEqual([]);
+    });
+
+    it('should abort the restarted request when the user aborted', async () => {
+      const {mockCDPSession, requests, sent} = await setup(async request => {
+        await request.abort('blockedbyclient');
+      });
+
+      emitRequestWillBeSent(mockCDPSession);
+      emitRequestPaused(mockCDPSession, 'interception-job-1.0');
+      emitRequestPaused(mockCDPSession, 'interception-job-2.0');
+
+      expect(requests).toHaveLength(1);
+      expect(sent('Fetch.failRequest')).toEqual([
+        {requestId: 'interception-job-1.0', errorReason: 'BlockedByClient'},
+        {requestId: 'interception-job-2.0', errorReason: 'BlockedByClient'},
+      ]);
+      expect(sent('Fetch.continueRequest')).toEqual([]);
+    });
+
+    it('should replay the restarted request on the session that paused it again', async () => {
+      const {manager, mockCDPSession, requests, sent} = await setup(
+        async request => {
+          await request.abort('blockedbyclient');
+        },
+      );
+      const otherSession = new MockCDPSession();
+      const otherCommands: Array<{method: string; params: unknown}> = [];
+      otherSession.send = (async (method: string, params: unknown) => {
+        otherCommands.push({method, params});
+      }) as any;
+      await manager.addClient(otherSession);
+      otherCommands.length = 0;
+
+      emitRequestWillBeSent(mockCDPSession);
+      emitRequestPaused(mockCDPSession, 'interception-job-1.0');
+      emitRequestPaused(otherSession, 'interception-job-2.0');
+
+      expect(requests).toHaveLength(1);
+      expect(sent('Fetch.failRequest')).toEqual([
+        {requestId: 'interception-job-1.0', errorReason: 'BlockedByClient'},
+      ]);
+      expect(otherCommands).toEqual([
+        {
+          method: 'Fetch.failRequest',
+          params: {
+            requestId: 'interception-job-2.0',
+            errorReason: 'BlockedByClient',
+          },
+        },
+      ]);
+    });
+  });
+  it(`should emit requestfailed when Network.loadingFailed arrives before Fetch.requestPaused (github.com/puppeteer/puppeteer/issues/15575)`, async () => {
+    const mockCDPSession = new MockCDPSession();
+    const manager = createNetworkManager();
+    await manager.addClient(mockCDPSession);
+    await manager.setRequestInterception(true);
+
+    const events: string[] = [];
+    const requests: HTTPRequest[] = [];
+    manager.on(NetworkManagerEvent.Request, (request: HTTPRequest) => {
+      requests.push(request);
+      request.enqueueInterceptAction(async () => {
+        events.push('request handler');
+        await request.continue();
+      });
+    });
+    const failedRequests: HTTPRequest[] = [];
+    manager.on(NetworkManagerEvent.RequestFailed, (request: HTTPRequest) => {
+      events.push('requestfailed');
+      failedRequests.push(request);
+    });
+    manager.on(NetworkManagerEvent.RequestFinished, () => {
+      events.push('requestfinished');
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '58462.1',
+      loaderId: '',
+      documentURL: 'about:blank',
+      request: {
+        url: 'http://127.0.0.1:1337/arbitrary-endpoint',
+        method: 'GET',
+        headers: {},
+        mixedContentType: 'none',
+        initialPriority: 'High',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 1,
+      wallTime: 1,
+      initiator: {type: 'script'},
+      redirectHasExtraInfo: false,
+      type: 'Fetch',
+      frameId: 'frame-1',
+      hasUserGesture: false,
+    });
+    mockCDPSession.emit('Network.loadingFailed', {
+      requestId: '58462.1',
+      timestamp: 2,
+      type: 'Fetch',
+      errorText: 'net::ERR_ABORTED',
+      canceled: true,
+    });
+
+    expect(requests).toHaveLength(0);
+    expect(failedRequests).toHaveLength(0);
+
+    mockCDPSession.emit('Fetch.requestPaused', {
+      requestId: 'interception-job-1.0',
+      request: {
+        url: 'http://127.0.0.1:1337/arbitrary-endpoint',
+        method: 'GET',
+        headers: {},
+        initialPriority: 'High',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      },
+      frameId: 'frame-1',
+      resourceType: 'Fetch',
+      networkId: '58462.1',
+    });
+
+    expect(requests).toHaveLength(1);
+    await new Promise(resolve => {
+      return setTimeout(resolve, 0);
+    });
+
+    expect(events).toEqual(['request handler', 'requestfailed']);
+    expect(failedRequests[0]).toBe(requests[0]);
+    expect(failedRequests[0]!.failure()).toEqual({
+      errorText: 'net::ERR_ABORTED',
+    });
+  });
+  it(`should handle Network.responseReceivedExtraInfo event after Network.responseReceived event (github.com/puppeteer/puppeteer/issues/8234)`, async () => {
+    const mockCDPSession = new MockCDPSession();
+    const manager = createNetworkManager();
+    await manager.addClient(mockCDPSession);
+
+    const requests: HTTPRequest[] = [];
+    manager.on(NetworkManagerEvent.RequestFinished, (request: HTTPRequest) => {
+      requests.push(request);
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '1360.2',
+      loaderId: '9E86B0282CC98B77FB0ABD49156DDFDD',
+      documentURL: 'http://this.is.the.start.page.com/',
+      request: {
+        url: 'http://this.is.a.test.com:1080/test.js',
+        method: 'GET',
+        headers: {
+          'Accept-Language': 'en-US,en;q=0.9',
+          Referer: 'http://this.is.the.start.page.com/',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.0 Safari/537.36',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'High',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: false,
+      },
+      timestamp: 10959.020087,
+      wallTime: 1649712607.861365,
+      initiator: {
+        type: 'parser',
+        url: 'http://this.is.the.start.page.com/',
+        lineNumber: 9,
+        columnNumber: 80,
+      },
+      redirectHasExtraInfo: false,
+      type: 'Script',
+      frameId: '60E6C35E7E519F28E646056820095498',
+      hasUserGesture: false,
+    });
+    mockCDPSession.emit('Network.responseReceived', {
+      requestId: '1360.2',
+      loaderId: '9E86B0282CC98B77FB0ABD49156DDFDD',
+      timestamp: 10959.042529,
+      type: 'Script',
+      response: {
+        url: 'http://this.is.a.test.com:1080',
+        status: 200,
+        statusText: 'OK',
+        headers: {
+          connection: 'keep-alive',
+          'content-length': '85862',
+        },
+        charset: 'utf-8',
+        mimeType: 'text/plain',
+        connectionReused: false,
+        connectionId: 119,
+        remoteIPAddress: '127.0.0.1',
+        remotePort: 1080,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 66,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 10959.023904,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: 0.328,
+          dnsEnd: 2.183,
+          connectStart: 2.183,
+          connectEnd: 2.798,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 2.982,
+          sendEnd: 3.757,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 16.373,
+        },
+        responseTime: 1649712607880.971,
+        protocol: 'http/1.1',
+        securityState: 'insecure',
+      },
+      hasExtraInfo: true,
+      frameId: '60E6C35E7E519F28E646056820095498',
+    });
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: '1360.2',
+      blockedCookies: [],
+      headers: {
+        connection: 'keep-alive',
+        'content-length': '85862',
+      },
+      resourceIPAddressSpace: 'Public',
+      statusCode: 200,
+      headersText:
+        'HTTP/1.1 200 OK\r\nconnection: keep-alive\r\ncontent-length: 85862\r\n\r\n',
+    });
+    mockCDPSession.emit('Network.loadingFinished', {
+      requestId: '1360.2',
+      timestamp: 10959.060708,
+      encodedDataLength: 85928,
+    });
+
+    expect(requests).toHaveLength(1);
+  });
+
+  it(`should resolve the response once the late responseReceivedExtraInfo event arrives`, async () => {
+    const mockCDPSession = new MockCDPSession();
+    const manager = createNetworkManager();
+    await manager.addClient(mockCDPSession);
+
+    const finishedRequests: HTTPRequest[] = [];
+    const pendingRequests: HTTPRequest[] = [];
+    manager.on(NetworkManagerEvent.RequestFinished, (request: HTTPRequest) => {
+      finishedRequests.push(request);
+    });
+
+    manager.on(NetworkManagerEvent.Request, (request: HTTPRequest) => {
+      pendingRequests.push(request);
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: 'LOADERID',
+      loaderId: 'LOADERID',
+      documentURL: 'http://10.1.0.39:42915/empty.html',
+      request: {
+        url: 'http://10.1.0.39:42915/empty.html',
+        method: 'GET',
+        headers: {
+          'Upgrade-Insecure-Requests': '1',
+          'User-Agent':
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.0.0 Safari/537.36',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 671.229856,
+      wallTime: 1660121157.913774,
+      initiator: {type: 'other'},
+      redirectHasExtraInfo: false,
+      type: 'Document',
+      frameId: 'FRAMEID',
+      hasUserGesture: false,
+    });
+
+    mockCDPSession.emit('Network.responseReceived', {
+      requestId: 'LOADERID',
+      loaderId: 'LOADERID',
+      timestamp: 671.236025,
+      type: 'Document',
+      response: {
+        url: 'http://10.1.0.39:42915/empty.html',
+        status: 200,
+        statusText: 'OK',
+        charset: 'utf-8',
+        headers: {
+          'Cache-Control': 'no-cache, no-store',
+          Connection: 'keep-alive',
+          'Content-Length': '0',
+          'Content-Type': 'text/html; charset=utf-8',
+          Date: 'Wed, 10 Aug 2022 08:45:57 GMT',
+          'Keep-Alive': 'timeout=5',
+        },
+        mimeType: 'text/html',
+        connectionReused: true,
+        connectionId: 18,
+        remoteIPAddress: '10.1.0.39',
+        remotePort: 42915,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 197,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 671.232585,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: -1,
+          dnsEnd: -1,
+          connectStart: -1,
+          connectEnd: -1,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 0.308,
+          sendEnd: 0.364,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 1.554,
+        },
+        responseTime: 1.660121157917951e12,
+        protocol: 'http/1.1',
+        securityState: 'insecure',
+      },
+      hasExtraInfo: true,
+      frameId: 'FRAMEID',
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+      requestId: 'LOADERID',
+      associatedCookies: [],
+      headers: {
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'Accept-Encoding': 'gzip, deflate',
+        'Accept-Language': 'en-US,en;q=0.9',
+        Connection: 'keep-alive',
+        Host: '10.1.0.39:42915',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent':
+          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.0.0 Safari/537.36',
+      },
+      connectTiming: {requestTime: 671.232585},
+    });
+
+    mockCDPSession.emit('Network.loadingFinished', {
+      requestId: 'LOADERID',
+      timestamp: 671.234448,
+      encodedDataLength: 197,
+    });
+
+    expect(pendingRequests).toHaveLength(1);
+    expect(finishedRequests).toHaveLength(0);
+    expect(pendingRequests[0]!.response()).toEqual(null);
+
+    // The extra info might arrive late.
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: 'LOADERID',
+      blockedCookies: [],
+      headers: {
+        'Cache-Control': 'no-cache, no-store',
+        Connection: 'keep-alive',
+        'Content-Length': '0',
+        'Content-Type': 'text/html; charset=utf-8',
+        Date: 'Wed, 10 Aug 2022 09:04:39 GMT',
+        'Keep-Alive': 'timeout=5',
+      },
+      resourceIPAddressSpace: 'Public',
+      statusCode: 200,
+      headersText:
+        'HTTP/1.1 200 OK\\r\\nCache-Control: no-cache, no-store\\r\\nContent-Type: text/html; charset=utf-8\\r\\nDate: Wed, 10 Aug 2022 09:04:39 GMT\\r\\nConnection: keep-alive\\r\\nKeep-Alive: timeout=5\\r\\nContent-Length: 0\\r\\n\\r\\n',
+    });
+
+    expect(pendingRequests).toHaveLength(1);
+    expect(finishedRequests).toHaveLength(1);
+    expect(pendingRequests[0]!.response()).not.toEqual(null);
+  });
+
+  it(`should send responses for iframe that don't receive loadingFinished event`, async () => {
+    const mockCDPSession = new MockCDPSession();
+    const manager = createNetworkManager();
+    await manager.addClient(mockCDPSession);
+
+    const responses: HTTPResponse[] = [];
+    const requests: HTTPRequest[] = [];
+    manager.on(NetworkManagerEvent.Response, (response: HTTPResponse) => {
+      responses.push(response);
+    });
+
+    manager.on(NetworkManagerEvent.Request, (request: HTTPRequest) => {
+      requests.push(request);
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '94051D839ACF29E53A3D1273FB20B4C4',
+      loaderId: '94051D839ACF29E53A3D1273FB20B4C4',
+      documentURL: 'http://127.0.0.1:54590/empty.html',
+      request: {
+        url: 'http://127.0.0.1:54590/empty.html',
+        method: 'GET',
+        headers: {
+          Referer: 'http://localhost:54590/',
+          'Upgrade-Insecure-Requests': '1',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/105.0.5173.0 Safari/537.36',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: false,
+      },
+      timestamp: 504903.99901,
+      wallTime: 1660125092.026021,
+      initiator: {
+        type: 'script',
+        stack: {
+          callFrames: [
+            {
+              functionName: 'navigateFrame',
+              scriptId: '8',
+              url: 'pptr://__puppeteer_evaluation_script__',
+              lineNumber: 2,
+              columnNumber: 18,
+            },
+          ],
+        },
+      },
+      redirectHasExtraInfo: false,
+      type: 'Document',
+      frameId: '07D18B8630A8161C72B6079B74123D60',
+      hasUserGesture: true,
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+      requestId: '94051D839ACF29E53A3D1273FB20B4C4',
+      associatedCookies: [],
+      headers: {
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        Connection: 'keep-alive',
+        Host: '127.0.0.1:54590',
+        Referer: 'http://localhost:54590/',
+        'Sec-Fetch-Dest': 'iframe',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'cross-site',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/105.0.5173.0 Safari/537.36',
+      },
+      connectTiming: {requestTime: 504904.000422},
+      clientSecurityState: {
+        initiatorIsSecureContext: true,
+        initiatorIPAddressSpace: 'Local',
+        localNetworkAccessRequestPolicy: 'Allow',
+      },
+    });
+
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: '94051D839ACF29E53A3D1273FB20B4C4',
+      blockedCookies: [],
+      headers: {
+        'Cache-Control': 'no-cache, no-store',
+        Connection: 'keep-alive',
+        'Content-Length': '0',
+        'Content-Type': 'text/html; charset=utf-8',
+        Date: 'Wed, 10 Aug 2022 09:51:32 GMT',
+        'Keep-Alive': 'timeout=5',
+      },
+      resourceIPAddressSpace: 'Local',
+      statusCode: 200,
+      headersText:
+        'HTTP/1.1 200 OK\r\nCache-Control: no-cache, no-store\r\nContent-Type: text/html; charset=utf-8\r\nDate: Wed, 10 Aug 2022 09:51:32 GMT\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\nContent-Length: 0\r\n\r\n',
+    });
+
+    mockCDPSession.emit('Network.responseReceived', {
+      requestId: '94051D839ACF29E53A3D1273FB20B4C4',
+      loaderId: '94051D839ACF29E53A3D1273FB20B4C4',
+      timestamp: 504904.00338,
+      type: 'Document',
+      response: {
+        url: 'http://127.0.0.1:54590/empty.html',
+        status: 200,
+        statusText: 'OK',
+        charset: 'utf-8',
+        headers: {
+          'Cache-Control': 'no-cache, no-store',
+          Connection: 'keep-alive',
+          'Content-Length': '0',
+          'Content-Type': 'text/html; charset=utf-8',
+          Date: 'Wed, 10 Aug 2022 09:51:32 GMT',
+          'Keep-Alive': 'timeout=5',
+        },
+        mimeType: 'text/html',
+        connectionReused: true,
+        connectionId: 13,
+        remoteIPAddress: '127.0.0.1',
+        remotePort: 54590,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 197,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 504904.000422,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: -1,
+          dnsEnd: -1,
+          connectStart: -1,
+          connectEnd: -1,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 0.338,
+          sendEnd: 0.413,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 1.877,
+        },
+        responseTime: 1.660125092029241e12,
+        protocol: 'http/1.1',
+        securityState: 'secure',
+      },
+      hasExtraInfo: true,
+      frameId: '07D18B8630A8161C72B6079B74123D60',
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(responses).toHaveLength(1);
+    expect(requests[0]!.response()).not.toEqual(null);
+  });
+
+  it(`should send responses for iframe that don't receive loadingFinished event`, async () => {
+    const mockCDPSession = new MockCDPSession();
+    const manager = createNetworkManager();
+    await manager.addClient(mockCDPSession);
+
+    const responses: HTTPResponse[] = [];
+    const requests: HTTPRequest[] = [];
+    manager.on(NetworkManagerEvent.Response, (response: HTTPResponse) => {
+      responses.push(response);
+    });
+
+    manager.on(NetworkManagerEvent.Request, (request: HTTPRequest) => {
+      requests.push(request);
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: 'E18BEB94B486CA8771F9AFA2030FEA37',
+      loaderId: 'E18BEB94B486CA8771F9AFA2030FEA37',
+      documentURL: 'http://localhost:56295/empty.html',
+      request: {
+        url: 'http://localhost:56295/empty.html',
+        method: 'GET',
+        headers: {
+          'Upgrade-Insecure-Requests': '1',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/105.0.5173.0 Safari/537.36',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 510294.105656,
+      wallTime: 1660130482.230591,
+      initiator: {type: 'other'},
+      redirectHasExtraInfo: false,
+      type: 'Document',
+      frameId: 'F9C89A517341F1EFFE63310141630189',
+      hasUserGesture: false,
+    });
+    mockCDPSession.emit('Network.responseReceived', {
+      requestId: 'E18BEB94B486CA8771F9AFA2030FEA37',
+      loaderId: 'E18BEB94B486CA8771F9AFA2030FEA37',
+      timestamp: 510294.119816,
+      type: 'Document',
+      response: {
+        url: 'http://localhost:56295/empty.html',
+        status: 200,
+        statusText: 'OK',
+        charset: 'utf-8',
+        headers: {
+          'Cache-Control': 'no-cache, no-store',
+          Connection: 'keep-alive',
+          'Content-Length': '0',
+          'Content-Type': 'text/html; charset=utf-8',
+          Date: 'Wed, 10 Aug 2022 11:21:22 GMT',
+          'Keep-Alive': 'timeout=5',
+        },
+        mimeType: 'text/html',
+        connectionReused: true,
+        connectionId: 13,
+        remoteIPAddress: '[::1]',
+        remotePort: 56295,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 197,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 510294.106734,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: -1,
+          dnsEnd: -1,
+          connectStart: -1,
+          connectEnd: -1,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 2.195,
+          sendEnd: 2.29,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 6.493,
+        },
+        responseTime: 1.660130482238109e12,
+        protocol: 'http/1.1',
+        securityState: 'secure',
+      },
+      hasExtraInfo: true,
+      frameId: 'F9C89A517341F1EFFE63310141630189',
+    });
+    mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+      requestId: 'E18BEB94B486CA8771F9AFA2030FEA37',
+      associatedCookies: [],
+      headers: {
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        Connection: 'keep-alive',
+        Host: 'localhost:56295',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/105.0.5173.0 Safari/537.36',
+      },
+      connectTiming: {requestTime: 510294.106734},
+    });
+    mockCDPSession.emit('Network.loadingFinished', {
+      requestId: 'E18BEB94B486CA8771F9AFA2030FEA37',
+      timestamp: 510294.113383,
+      encodedDataLength: 197,
+    });
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: 'E18BEB94B486CA8771F9AFA2030FEA37',
+      blockedCookies: [],
+      headers: {
+        'Cache-Control': 'no-cache, no-store',
+        Connection: 'keep-alive',
+        'Content-Length': '0',
+        'Content-Type': 'text/html; charset=utf-8',
+        Date: 'Wed, 10 Aug 2022 11:21:22 GMT',
+        'Keep-Alive': 'timeout=5',
+      },
+      resourceIPAddressSpace: 'Local',
+      statusCode: 200,
+      headersText:
+        'HTTP/1.1 200 OK\r\nCache-Control: no-cache, no-store\r\nContent-Type: text/html; charset=utf-8\r\nDate: Wed, 10 Aug 2022 11:21:22 GMT\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\nContent-Length: 0\r\n\r\n',
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(responses).toHaveLength(1);
+    expect(requests[0]!.response()).not.toEqual(null);
+  });
+
+  it(`should handle cached redirects`, async () => {
+    const mockCDPSession = new MockCDPSession();
+    const manager = createNetworkManager();
+    await manager.addClient(mockCDPSession);
+
+    const responses: HTTPResponse[] = [];
+    const requests: HTTPRequest[] = [];
+    manager.on(NetworkManagerEvent.Response, (response: HTTPResponse) => {
+      responses.push(response);
+    });
+
+    manager.on(NetworkManagerEvent.Request, (request: HTTPRequest) => {
+      requests.push(request);
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '6D76C8ACAECE880C722FA515AD380015',
+      loaderId: '6D76C8ACAECE880C722FA515AD380015',
+      documentURL: 'http://localhost:3000/',
+      request: {
+        url: 'http://localhost:3000/',
+        method: 'GET',
+        headers: {
+          'Upgrade-Insecure-Requests': '1',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 31949.95878,
+      wallTime: 1680698353.570949,
+      initiator: {type: 'other'},
+      redirectHasExtraInfo: false,
+      type: 'Document',
+      frameId: '4A6E05B1781795F1B586C1F8F8B2CBE4',
+      hasUserGesture: false,
+    });
+    mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+      requestId: '6D76C8ACAECE880C722FA515AD380015',
+      associatedCookies: [],
+      headers: {
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
+        Connection: 'keep-alive',
+        Host: 'localhost:3000',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+        'sec-ch-ua-mobile': '?0',
+      },
+      connectTiming: {requestTime: 31949.959838},
+      siteHasCookieInOtherPartition: false,
+    });
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: '6D76C8ACAECE880C722FA515AD380015',
+      blockedCookies: [],
+      headers: {
+        'Cache-Control': 'max-age=5',
+        Connection: 'keep-alive',
+        'Content-Type': 'text/html; charset=utf-8',
+        Date: 'Wed, 05 Apr 2023 12:39:13 GMT',
+        'Keep-Alive': 'timeout=5',
+        'Transfer-Encoding': 'chunked',
+      },
+      resourceIPAddressSpace: 'Local',
+      statusCode: 200,
+      headersText:
+        'HTTP/1.1 200 OK\\r\\nContent-Type: text/html; charset=utf-8\\r\\nCache-Control: max-age=5\\r\\nDate: Wed, 05 Apr 2023 12:39:13 GMT\\r\\nConnection: keep-alive\\r\\nKeep-Alive: timeout=5\\r\\nTransfer-Encoding: chunked\\r\\n\\r\\n',
+      cookiePartitionKey: {
+        topLevelSite: 'http://localhost',
+        hasCrossSiteAncestor: false,
+      },
+      cookiePartitionKeyOpaque: false,
+    });
+
+    mockCDPSession.emit('Network.responseReceived', {
+      requestId: '6D76C8ACAECE880C722FA515AD380015',
+      loaderId: '6D76C8ACAECE880C722FA515AD380015',
+      timestamp: 31949.965149,
+      type: 'Document',
+      response: {
+        url: 'http://localhost:3000/',
+        status: 200,
+        statusText: 'OK',
+        charset: 'utf-8',
+        headers: {
+          'Cache-Control': 'max-age=5',
+          Connection: 'keep-alive',
+          'Content-Type': 'text/html; charset=utf-8',
+          Date: 'Wed, 05 Apr 2023 12:39:13 GMT',
+          'Keep-Alive': 'timeout=5',
+          'Transfer-Encoding': 'chunked',
+        },
+        mimeType: 'text/html',
+        connectionReused: true,
+        connectionId: 34,
+        remoteIPAddress: '127.0.0.1',
+        remotePort: 3000,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 197,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 31949.959838,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: -1,
+          dnsEnd: -1,
+          connectStart: -1,
+          connectEnd: -1,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 0.613,
+          sendEnd: 0.665,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 3.619,
+        },
+        responseTime: 1.680698353573552e12,
+        protocol: 'http/1.1',
+        alternateProtocolUsage: 'unspecifiedReason',
+        securityState: 'secure',
+      },
+      hasExtraInfo: true,
+      frameId: '4A6E05B1781795F1B586C1F8F8B2CBE4',
+    });
+    mockCDPSession.emit('Network.loadingFinished', {
+      requestId: '6D76C8ACAECE880C722FA515AD380015',
+      timestamp: 31949.963861,
+      encodedDataLength: 847,
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      loaderId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      documentURL: 'http://localhost:3000/redirect',
+      request: {
+        url: 'http://localhost:3000/redirect',
+        method: 'GET',
+        headers: {
+          Referer: 'http://localhost:3000/',
+          'Upgrade-Insecure-Requests': '1',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+          'sec-ch-ua-mobile': '?0',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 31949.982895,
+      wallTime: 1680698353.595079,
+      initiator: {
+        type: 'script',
+        stack: {
+          callFrames: [
+            {
+              functionName: '',
+              scriptId: '5',
+              url: 'http://localhost:3000/',
+              lineNumber: 8,
+              columnNumber: 32,
+            },
+          ],
+        },
+      },
+      redirectHasExtraInfo: false,
+      type: 'Document',
+      frameId: '4A6E05B1781795F1B586C1F8F8B2CBE4',
+      hasUserGesture: false,
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+      requestId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      associatedCookies: [],
+      headers: {
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
+        Connection: 'keep-alive',
+        Host: 'localhost:3000',
+        Referer: 'http://localhost:3000/',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+        'sec-ch-ua-mobile': '?0',
+      },
+      connectTiming: {requestTime: 31949.983605},
+      siteHasCookieInOtherPartition: false,
+    });
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      blockedCookies: [],
+      headers: {
+        Connection: 'keep-alive',
+        Date: 'Wed, 05 Apr 2023 12:39:13 GMT',
+        'Keep-Alive': 'timeout=5',
+        Location: 'http://localhost:3000/#from-redirect',
+        'Transfer-Encoding': 'chunked',
+      },
+      resourceIPAddressSpace: 'Local',
+      statusCode: 302,
+      headersText:
+        'HTTP/1.1 302 Found\\r\\nLocation: http://localhost:3000/#from-redirect\\r\\nDate: Wed, 05 Apr 2023 12:39:13 GMT\\r\\nConnection: keep-alive\\r\\nKeep-Alive: timeout=5\\r\\nTransfer-Encoding: chunked\\r\\n\\r\\n',
+      cookiePartitionKey: {
+        topLevelSite: 'http://localhost',
+        hasCrossSiteAncestor: false,
+      },
+      cookiePartitionKeyOpaque: false,
+    });
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      loaderId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      documentURL: 'http://localhost:3000/',
+      request: {
+        url: 'http://localhost:3000/',
+        urlFragment: '#from-redirect',
+        method: 'GET',
+        headers: {
+          Referer: 'http://localhost:3000/',
+          'Upgrade-Insecure-Requests': '1',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+          'sec-ch-ua-mobile': '?0',
+        },
+        mixedContentType: 'none',
+        initialPriority: 'VeryHigh',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+        isSameSite: true,
+      },
+      timestamp: 31949.988506,
+      wallTime: 1680698353.60069,
+      initiator: {
+        type: 'script',
+        stack: {
+          callFrames: [
+            {
+              functionName: '',
+              scriptId: '5',
+              url: 'http://localhost:3000/',
+              lineNumber: 8,
+              columnNumber: 32,
+            },
+          ],
+        },
+      },
+      redirectHasExtraInfo: true,
+      redirectResponse: {
+        url: 'http://localhost:3000/redirect',
+        status: 302,
+        statusText: 'Found',
+        charset: 'utf-8',
+        headers: {
+          Connection: 'keep-alive',
+          Date: 'Wed, 05 Apr 2023 12:39:13 GMT',
+          'Keep-Alive': 'timeout=5',
+          Location: 'http://localhost:3000/#from-redirect',
+          'Transfer-Encoding': 'chunked',
+        },
+        mimeType: '',
+        connectionReused: true,
+        connectionId: 34,
+        remoteIPAddress: '127.0.0.1',
+        remotePort: 3000,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 182,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 31949.983605,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: -1,
+          dnsEnd: -1,
+          connectStart: -1,
+          connectEnd: -1,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 0.364,
+          sendEnd: 0.401,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 4.085,
+        },
+        responseTime: 1.680698353596548e12,
+        protocol: 'http/1.1',
+        alternateProtocolUsage: 'unspecifiedReason',
+        securityState: 'secure',
+      },
+      type: 'Document',
+      frameId: '4A6E05B1781795F1B586C1F8F8B2CBE4',
+      hasUserGesture: false,
+    });
+    mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+      requestId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      associatedCookies: [],
+      headers: {},
+      connectTiming: {requestTime: 31949.988855},
+      siteHasCookieInOtherPartition: false,
+    });
+
+    mockCDPSession.emit('Network.responseReceived', {
+      requestId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      loaderId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      timestamp: 31949.991319,
+      type: 'Document',
+      response: {
+        url: 'http://localhost:3000/',
+        status: 200,
+        statusText: 'OK',
+        charset: 'utf-8',
+        headers: {
+          'Cache-Control': 'max-age=5',
+          'Content-Type': 'text/html; charset=utf-8',
+          Date: 'Wed, 05 Apr 2023 12:39:13 GMT',
+        },
+        mimeType: 'text/html',
+        connectionReused: false,
+        connectionId: 0,
+        remoteIPAddress: '127.0.0.1',
+        remotePort: 3000,
+        fromDiskCache: true,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 0,
+        timing: {
+          receiveHeadersStart: 0,
+          requestTime: 31949.988855,
+          proxyStart: -1,
+          proxyEnd: -1,
+          dnsStart: -1,
+          dnsEnd: -1,
+          connectStart: -1,
+          connectEnd: -1,
+          sslStart: -1,
+          sslEnd: -1,
+          workerStart: -1,
+          workerReady: -1,
+          workerFetchStart: -1,
+          workerRespondWithSettled: -1,
+          sendStart: 0.069,
+          sendEnd: 0.069,
+          pushStart: 0,
+          pushEnd: 0,
+          receiveHeadersEnd: 0.321,
+        },
+        responseTime: 1.680698353573552e12,
+        protocol: 'http/1.1',
+        alternateProtocolUsage: 'unspecifiedReason',
+        securityState: 'secure',
+      },
+      hasExtraInfo: true,
+      frameId: '4A6E05B1781795F1B586C1F8F8B2CBE4',
+    });
+    mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+      requestId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      blockedCookies: [],
+      headers: {
+        Connection: 'keep-alive',
+        Date: 'Wed, 05 Apr 2023 12:39:13 GMT',
+        'Keep-Alive': 'timeout=5',
+        Location: 'http://localhost:3000/#from-redirect',
+        'Transfer-Encoding': 'chunked',
+      },
+      resourceIPAddressSpace: 'Local',
+      statusCode: 302,
+      headersText:
+        'HTTP/1.1 302 Found\\r\\nLocation: http://localhost:3000/#from-redirect\\r\\nDate: Wed, 05 Apr 2023 12:39:13 GMT\\r\\nConnection: keep-alive\\r\\nKeep-Alive: timeout=5\\r\\nTransfer-Encoding: chunked\\r\\n\\r\\n',
+      cookiePartitionKey: {
+        topLevelSite: 'http://localhost',
+        hasCrossSiteAncestor: false,
+      },
+      cookiePartitionKeyOpaque: false,
+    });
+    mockCDPSession.emit('Network.loadingFinished', {
+      requestId: '4C2CC44FB6A6CAC5BE2780BCC9313105',
+      timestamp: 31949.989412,
+      encodedDataLength: 0,
+    });
+    expect(
+      responses.map(r => {
+        return r.status();
+      }),
+    ).toEqual([200, 302, 200]);
+  });
+
+  describe('internal unpaused redirects (github.com/puppeteer/puppeteer/issues/12183)', () => {
+    for (const pauseFirst of [false, true]) {
+      it(`should handle an internal redirect that is not paused by Fetch.requestPaused (pauseFirst=${pauseFirst})`, async () => {
+        const sentCommands: Array<{method: string; params: unknown}> = [];
+        const mockCDPSession = new MockCDPSession();
+        mockCDPSession.send = (async (method: string, params: unknown) => {
+          sentCommands.push({method, params});
+        }) as any;
+        const manager = createNetworkManager();
+        await manager.addClient(mockCDPSession);
+        await manager.setRequestInterception(true);
+
+        const requests: HTTPRequest[] = [];
+        const responses: HTTPResponse[] = [];
+        const continued: Array<Promise<void>> = [];
+        manager.on(NetworkManagerEvent.Request, (request: HTTPRequest) => {
+          requests.push(request);
+          continued.push(request.continue());
+        });
+        manager.on(NetworkManagerEvent.Response, (response: HTTPResponse) => {
+          responses.push(response);
+        });
+
+        const requestId = 'LOADERID';
+        const frameId = 'FRAMEID';
+        const baseRequest = {
+          method: 'GET',
+          headers: {},
+          mixedContentType: 'none' as const,
+          initialPriority: 'VeryHigh' as const,
+          referrerPolicy: 'strict-origin-when-cross-origin' as const,
+          isSameSite: true,
+        };
+        const baseResponse = {
+          charset: 'utf-8',
+          headers: {},
+          mimeType: 'text/html',
+          connectionReused: false,
+          connectionId: 1,
+          fromDiskCache: false,
+          fromServiceWorker: false,
+          fromPrefetchCache: false,
+          encodedDataLength: 0,
+          protocol: 'http/1.1',
+          securityState: 'secure' as const,
+        };
+
+        // Hop 1: https://example.com/start -> 301 to http://sub.example.com/page
+        mockCDPSession.emit('Network.requestWillBeSent', {
+          requestId,
+          loaderId: requestId,
+          documentURL: 'https://example.com/start',
+          request: {...baseRequest, url: 'https://example.com/start'},
+          timestamp: 1,
+          wallTime: 1,
+          initiator: {type: 'other'},
+          redirectHasExtraInfo: false,
+          type: 'Document',
+          frameId,
+          hasUserGesture: false,
+        });
+        mockCDPSession.emit('Fetch.requestPaused', {
+          requestId: 'interception-job-1.0',
+          request: {
+            url: 'https://example.com/start',
+            method: 'GET',
+            headers: {},
+            initialPriority: 'VeryHigh',
+            referrerPolicy: 'strict-origin-when-cross-origin',
+          },
+          frameId,
+          resourceType: 'Document',
+          networkId: requestId,
+        });
+        mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+          requestId,
+          associatedCookies: [],
+          headers: {},
+          connectTiming: {requestTime: 1},
+        });
+        mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+          requestId,
+          blockedCookies: [],
+          headers: {location: 'http://sub.example.com/page'},
+          resourceIPAddressSpace: 'Public',
+          statusCode: 301,
+        });
+
+        // Hop 2: http://sub.example.com/page (internally upgraded via 307
+        // without Fetch.requestPaused)
+        mockCDPSession.emit('Network.requestWillBeSent', {
+          requestId,
+          loaderId: requestId,
+          documentURL: 'http://sub.example.com/page',
+          request: {...baseRequest, url: 'http://sub.example.com/page'},
+          timestamp: 2,
+          wallTime: 2,
+          initiator: {type: 'other'},
+          redirectHasExtraInfo: true,
+          redirectResponse: {
+            ...baseResponse,
+            url: 'https://example.com/start',
+            status: 301,
+            statusText: 'Moved Permanently',
+            headers: {location: 'http://sub.example.com/page'},
+          },
+          type: 'Document',
+          frameId,
+          hasUserGesture: false,
+        });
+
+        // Hop 3: https://sub.example.com/page (paused by Fetch.requestPaused)
+        const emitHop3Paused = () => {
+          mockCDPSession.emit('Fetch.requestPaused', {
+            requestId: 'interception-job-2.0',
+            request: {
+              url: 'https://sub.example.com/page',
+              method: 'GET',
+              headers: {},
+              initialPriority: 'VeryHigh',
+              referrerPolicy: 'strict-origin-when-cross-origin',
+            },
+            frameId,
+            resourceType: 'Document',
+            networkId: requestId,
+          });
+        };
+        const emitHop3WillBeSent = () => {
+          mockCDPSession.emit('Network.requestWillBeSent', {
+            requestId,
+            loaderId: requestId,
+            documentURL: 'https://sub.example.com/page',
+            request: {...baseRequest, url: 'https://sub.example.com/page'},
+            timestamp: 3,
+            wallTime: 3,
+            initiator: {type: 'other'},
+            redirectHasExtraInfo: false,
+            redirectResponse: {
+              ...baseResponse,
+              url: 'http://sub.example.com/page',
+              status: 307,
+              statusText: 'Temporary Redirect',
+              headers: {
+                Location: 'https://sub.example.com/page',
+                'Non-Authoritative-Reason': 'HttpsUpgrades',
+              },
+              securityState: 'insecure',
+            },
+            type: 'Document',
+            frameId,
+            hasUserGesture: false,
+          });
+        };
+
+        if (pauseFirst) {
+          emitHop3Paused();
+          emitHop3WillBeSent();
+        } else {
+          emitHop3WillBeSent();
+          emitHop3Paused();
+        }
+
+        mockCDPSession.emit('Network.requestWillBeSentExtraInfo', {
+          requestId,
+          associatedCookies: [],
+          headers: {},
+          connectTiming: {requestTime: 3},
+        });
+        mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+          requestId,
+          blockedCookies: [],
+          headers: {'content-type': 'text/html'},
+          resourceIPAddressSpace: 'Public',
+          statusCode: 200,
+        });
+        mockCDPSession.emit('Network.responseReceived', {
+          requestId,
+          loaderId: requestId,
+          timestamp: 4,
+          type: 'Document',
+          response: {
+            ...baseResponse,
+            url: 'https://sub.example.com/page',
+            status: 200,
+            statusText: 'OK',
+          },
+          hasExtraInfo: true,
+          frameId,
+        });
+        mockCDPSession.emit('Network.loadingFinished', {
+          requestId,
+          timestamp: 5,
+          encodedDataLength: 100,
+        });
+
+        await Promise.all(continued);
+
+        expect(
+          requests.map(r => {
+            return r.url();
+          }),
+        ).toEqual([
+          'https://example.com/start',
+          'http://sub.example.com/page',
+          'https://sub.example.com/page',
+        ]);
+        expect(
+          responses.map(r => {
+            return r.status();
+          }),
+        ).toEqual([301, 307, 200]);
+        expect(requests[2]!.redirectChain()).toEqual([
+          requests[0],
+          requests[1],
+        ]);
+        expect(
+          sentCommands
+            .filter(c => {
+              return c.method === 'Fetch.continueRequest';
+            })
+            .map(c => {
+              return c.params;
+            }),
+        ).toEqual([
+          {requestId: 'interception-job-1.0'},
+          {requestId: 'interception-job-2.0'},
+        ]);
+      });
+    }
+
+    it('should handle delayed responseReceivedExtraInfo across an unpaused internal redirect', async () => {
+      const sentCommands: Array<{method: string; params: unknown}> = [];
+      const mockCDPSession = new MockCDPSession();
+      mockCDPSession.send = (async (method: string, params: unknown) => {
+        sentCommands.push({method, params});
+      }) as any;
+      const manager = createNetworkManager();
+      await manager.addClient(mockCDPSession);
+      await manager.setRequestInterception(true);
+
+      const requests: HTTPRequest[] = [];
+      const responses: HTTPResponse[] = [];
+      const continued: Array<Promise<void>> = [];
+      manager.on(NetworkManagerEvent.Request, (request: HTTPRequest) => {
+        requests.push(request);
+        continued.push(request.continue());
+      });
+      manager.on(NetworkManagerEvent.Response, (response: HTTPResponse) => {
+        responses.push(response);
+      });
+
+      const requestId = 'LOADERID';
+      const frameId = 'FRAMEID';
+      const baseRequest = {
+        method: 'GET',
+        headers: {},
+        mixedContentType: 'none' as const,
+        initialPriority: 'VeryHigh' as const,
+        referrerPolicy: 'strict-origin-when-cross-origin' as const,
+        isSameSite: true,
+      };
+      const baseResponse = {
+        charset: 'utf-8',
+        headers: {},
+        mimeType: 'text/html',
+        connectionReused: false,
+        connectionId: 1,
+        fromDiskCache: false,
+        fromServiceWorker: false,
+        fromPrefetchCache: false,
+        encodedDataLength: 0,
+        protocol: 'http/1.1',
+        securityState: 'secure' as const,
+      };
+
+      // Hop 1: https://example.com/start -> 301 to http://sub.example.com/page
+      mockCDPSession.emit('Network.requestWillBeSent', {
+        requestId,
+        loaderId: requestId,
+        documentURL: 'https://example.com/start',
+        request: {...baseRequest, url: 'https://example.com/start'},
+        timestamp: 1,
+        wallTime: 1,
+        initiator: {type: 'other'},
+        redirectHasExtraInfo: false,
+        type: 'Document',
+        frameId,
+        hasUserGesture: false,
+      });
+      mockCDPSession.emit('Fetch.requestPaused', {
+        requestId: 'interception-job-1.0',
+        request: {
+          url: 'https://example.com/start',
+          method: 'GET',
+          headers: {},
+          initialPriority: 'VeryHigh',
+          referrerPolicy: 'strict-origin-when-cross-origin',
+        },
+        frameId,
+        resourceType: 'Document',
+        networkId: requestId,
+      });
+
+      // Hop 2 arrives BEFORE Hop 1's responseReceivedExtraInfo
+      mockCDPSession.emit('Network.requestWillBeSent', {
+        requestId,
+        loaderId: requestId,
+        documentURL: 'http://sub.example.com/page',
+        request: {...baseRequest, url: 'http://sub.example.com/page'},
+        timestamp: 2,
+        wallTime: 2,
+        initiator: {type: 'other'},
+        redirectHasExtraInfo: true,
+        redirectResponse: {
+          ...baseResponse,
+          url: 'https://example.com/start',
+          status: 301,
+          statusText: 'Moved Permanently',
+          headers: {location: 'http://sub.example.com/page'},
+        },
+        type: 'Document',
+        frameId,
+        hasUserGesture: false,
+      });
+
+      // Hop 3's requestWillBeSent also arrives BEFORE Hop 1's
+      // responseReceivedExtraInfo, queueing Hop 2 in queuedRedirectInfo while
+      // storing Hop 3 in requestWillBeSentMap.
+      mockCDPSession.emit('Network.requestWillBeSent', {
+        requestId,
+        loaderId: requestId,
+        documentURL: 'https://sub.example.com/page',
+        request: {...baseRequest, url: 'https://sub.example.com/page'},
+        timestamp: 3,
+        wallTime: 3,
+        initiator: {type: 'other'},
+        redirectHasExtraInfo: false,
+        redirectResponse: {
+          ...baseResponse,
+          url: 'http://sub.example.com/page',
+          status: 307,
+          statusText: 'Temporary Redirect',
+          headers: {
+            Location: 'https://sub.example.com/page',
+            'Non-Authoritative-Reason': 'HttpsUpgrades',
+          },
+          securityState: 'insecure',
+        },
+        type: 'Document',
+        frameId,
+        hasUserGesture: false,
+      });
+
+      // Now Hop 1's delayed responseReceivedExtraInfo arrives, replaying Hop 2.
+      mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+        requestId,
+        blockedCookies: [],
+        headers: {location: 'http://sub.example.com/page'},
+        resourceIPAddressSpace: 'Public',
+        statusCode: 301,
+      });
+
+      // Hop 3's Fetch.requestPaused arrives and must still find Hop 3's stored
+      // requestWillBeSent.
+      mockCDPSession.emit('Fetch.requestPaused', {
+        requestId: 'interception-job-2.0',
+        request: {
+          url: 'https://sub.example.com/page',
+          method: 'GET',
+          headers: {},
+          initialPriority: 'VeryHigh',
+          referrerPolicy: 'strict-origin-when-cross-origin',
+        },
+        frameId,
+        resourceType: 'Document',
+        networkId: requestId,
+      });
+
+      mockCDPSession.emit('Network.responseReceivedExtraInfo', {
+        requestId,
+        blockedCookies: [],
+        headers: {'content-type': 'text/html'},
+        resourceIPAddressSpace: 'Public',
+        statusCode: 200,
+      });
+      mockCDPSession.emit('Network.responseReceived', {
+        requestId,
+        loaderId: requestId,
+        timestamp: 4,
+        type: 'Document',
+        response: {
+          ...baseResponse,
+          url: 'https://sub.example.com/page',
+          status: 200,
+          statusText: 'OK',
+        },
+        hasExtraInfo: true,
+        frameId,
+      });
+      mockCDPSession.emit('Network.loadingFinished', {
+        requestId,
+        timestamp: 5,
+        encodedDataLength: 100,
+      });
+
+      await Promise.all(continued);
+
+      expect(
+        requests.map(r => {
+          return r.url();
+        }),
+      ).toEqual([
+        'https://example.com/start',
+        'http://sub.example.com/page',
+        'https://sub.example.com/page',
+      ]);
+      expect(
+        responses.map(r => {
+          return r.status();
+        }),
+      ).toEqual([301, 307, 200]);
+      expect(requests[2]!.redirectChain()).toEqual([requests[0], requests[1]]);
+    });
+  });
+
+  it('should not override the user agent when nothing is emulated', async () => {
+    const commands: string[] = [];
+    const mockCDPSession = new MockCDPSession();
+    mockCDPSession.send = (async (method: string) => {
+      commands.push(method);
+    }) as any;
+    const manager = createNetworkManager();
+
+    await manager.addClient(mockCDPSession);
+    expect(commands).not.toContain('Network.setUserAgentOverride');
+
+    await manager.setUserAgent('custom-user-agent');
+    expect(commands).toContain('Network.setUserAgentOverride');
+  });
+
+  it('should reset the override when the emulated accept-language is cleared', async () => {
+    const commands: string[] = [];
+    const mockCDPSession = new MockCDPSession();
+    mockCDPSession.send = (async (method: string) => {
+      commands.push(method);
+    }) as any;
+    const manager = createNetworkManager();
+
+    await manager.addClient(mockCDPSession);
+    expect(commands).not.toContain('Network.setUserAgentOverride');
+
+    await manager.setAcceptLanguage('fr-FR');
+    expect(
+      commands.filter(command => {
+        return command === 'Network.setUserAgentOverride';
+      }),
+    ).toHaveLength(1);
+
+    // Clearing the emulated accept-language must still send an override so the
+    // browser is reset back to its defaults instead of keeping the stale value.
+    await manager.setAcceptLanguage(undefined);
+    expect(
+      commands.filter(command => {
+        return command === 'Network.setUserAgentOverride';
+      }),
+    ).toHaveLength(2);
+  });
+
+  it('should fall back to blockedReason when loadingFailed errorText is empty', async () => {
+    const mockCDPSession = new MockCDPSession();
+    const manager = createNetworkManager();
+    await manager.addClient(mockCDPSession);
+
+    const failedRequests: HTTPRequest[] = [];
+    manager.on(NetworkManagerEvent.RequestFailed, (request: HTTPRequest) => {
+      failedRequests.push(request);
+    });
+
+    mockCDPSession.emit('Network.requestWillBeSent', {
+      requestId: 'BLOCKED_REQ_1',
+      loaderId: 'LOADER_1',
+      documentURL: 'https://localhost:3000/',
+      request: {
+        url: 'http://example.com/mixed-script.js',
+        method: 'GET',
+        headers: {},
+        mixedContentType: 'blockable',
+        initialPriority: 'High',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      },
+      timestamp: 100,
+      wallTime: 100,
+      initiator: {type: 'parser'},
+      redirectHasExtraInfo: false,
+      type: 'Script',
+      frameId: 'FRAME_1',
+    });
+
+    mockCDPSession.emit('Network.loadingFailed', {
+      requestId: 'BLOCKED_REQ_1',
+      timestamp: 101,
+      type: 'Script',
+      errorText: '',
+      canceled: false,
+      blockedReason: 'mixed-content',
+    });
+
+    expect(failedRequests).toHaveLength(1);
+    expect(failedRequests[0]!.failure()).toEqual({
+      errorText: 'mixed-content',
+    });
+  });
+
+  describe('error handling', () => {
+    function createMockSession<E extends ErrorConstructor>(
+      ErrorCls: E,
+      message = 'error',
+    ) {
+      class MockCDPSession extends EventEmitter<CDPSessionEvents> {
+        async send(): Promise<any> {
+          throw new ErrorCls(message);
+        }
+        connection() {
+          return undefined;
+        }
+        readonly detached = false;
+        async detach() {}
+        id() {
+          return '1';
+        }
+        parentSession() {
+          return undefined;
+        }
+      }
+      return new MockCDPSession();
+    }
+
+    it('should not throw on target close error', async () => {
+      const mockCDPSession = createMockSession(
+        TargetCloseError as unknown as ErrorConstructor,
+      );
+      const manager = createNetworkManager();
+      await manager.addClient(mockCDPSession);
+      await manager.setCacheEnabled(true);
+      await manager.setExtraHTTPHeaders({});
+      await manager.setOfflineMode(true);
+      await manager.setUserAgent('test');
+    });
+
+    it('should not throw on unsupported errors', async () => {
+      const mockCDPSession = createMockSession(Error, 'Not supported');
+      const manager = createNetworkManager();
+      await manager.addClient(mockCDPSession);
+      await manager.setCacheEnabled(true);
+      await manager.setExtraHTTPHeaders({});
+      await manager.setOfflineMode(true);
+      await manager.setUserAgent('test');
+    });
+
+    it('should throw on non-TargetClose errors', async () => {
+      const mockCDPSession = createMockSession(Error);
+      const manager = createNetworkManager();
+      expect(async () => {
+        await manager.addClient(mockCDPSession);
+      }).rejects.toThrow();
+      expect(async () => {
+        await manager.setCacheEnabled(true);
+      }).rejects.toThrow();
+      expect(async () => {
+        await manager.setExtraHTTPHeaders({});
+      }).rejects.toThrow();
+      expect(async () => {
+        await manager.setOfflineMode(true);
+      }).rejects.toThrow();
+      expect(async () => {
+        await manager.setUserAgent('test');
+      }).rejects.toThrow();
+    });
+
+    it('should not throw if page().browser().userAgent() throws', async () => {
+      const mockCDPSession = new MockCDPSession();
+      const manager = new NetworkManager(
+        {
+          frame(): CdpFrame | null {
+            return null;
+          },
+          worker(): null {
+            return null;
+          },
+          page() {
+            return {
+              browser() {
+                return {
+                  userAgent() {
+                    throw new TargetCloseError('Target closed');
+                  },
+                };
+              },
+            } as any;
+          },
+        },
+        true,
+        () => {
+          return undefined;
+        },
+      );
+      await manager.addClient(mockCDPSession);
+    });
+  });
+
+  describe('encodedDataLength', () => {
+    const baseRequest = {
+      method: 'GET',
+      headers: {},
+      mixedContentType: 'none' as const,
+      initialPriority: 'VeryHigh' as const,
+      referrerPolicy: 'strict-origin-when-cross-origin' as const,
+      isSameSite: true,
+    };
+    const baseResponse = {
+      charset: 'utf-8',
+      headers: {},
+      mimeType: 'text/plain',
+      connectionReused: false,
+      connectionId: 0,
+      fromDiskCache: false,
+      fromServiceWorker: false,
+      fromPrefetchCache: false,
+      protocol: 'data',
+      securityState: 'unknown' as const,
+    };
+
+    it('should clamp -1 in responseReceived to 0 and preserve it on failure', async () => {
+      const mockCDPSession = new MockCDPSession();
+      const manager = createNetworkManager();
+      await manager.addClient(mockCDPSession);
+
+      let responseLengthOnEvent: number | undefined;
+      let capturedResponse: HTTPResponse | undefined;
+      manager.on(NetworkManagerEvent.Response, (response: HTTPResponse) => {
+        capturedResponse = response;
+        responseLengthOnEvent = response.encodedDataLength();
+      });
+
+      mockCDPSession.emit('Network.requestWillBeSent', {
+        requestId: 'req-1',
+        loaderId: 'req-1',
+        documentURL: 'data:text/plain,hello',
+        request: {...baseRequest, url: 'data:text/plain,hello'},
+        timestamp: 1,
+        wallTime: 1,
+        initiator: {type: 'other'},
+        redirectHasExtraInfo: false,
+        type: 'Document',
+        frameId: 'frame-1',
+        hasUserGesture: false,
+      });
+      mockCDPSession.emit('Network.responseReceived', {
+        requestId: 'req-1',
+        loaderId: 'req-1',
+        timestamp: 2,
+        type: 'Document',
+        response: {
+          ...baseResponse,
+          url: 'data:text/plain,hello',
+          status: 200,
+          statusText: 'OK',
+          encodedDataLength: -1,
+        },
+        hasExtraInfo: false,
+        frameId: 'frame-1',
+      });
+      mockCDPSession.emit('Network.loadingFailed', {
+        requestId: 'req-1',
+        timestamp: 3,
+        type: 'Document',
+        errorText: 'net::ERR_ABORTED',
+      });
+
+      expect(responseLengthOnEvent).toBe(0);
+      expect(capturedResponse?.encodedDataLength()).toBe(0);
+    });
+
+    it('should update encodedDataLength on loadingFinished and ignore -1', async () => {
+      const mockCDPSession = new MockCDPSession();
+      const manager = createNetworkManager();
+      await manager.addClient(mockCDPSession);
+
+      const responses: HTTPResponse[] = [];
+      const lengthsOnResponse: number[] = [];
+      manager.on(NetworkManagerEvent.Response, (response: HTTPResponse) => {
+        responses.push(response);
+        lengthsOnResponse.push(response.encodedDataLength());
+      });
+
+      for (const [id, responseLen, finishedLen] of [
+        ['req-1', 120, 450],
+        ['req-2', 120, -1],
+      ] as const) {
+        mockCDPSession.emit('Network.requestWillBeSent', {
+          requestId: id,
+          loaderId: id,
+          documentURL: 'https://example.com/',
+          request: {...baseRequest, url: 'https://example.com/'},
+          timestamp: 1,
+          wallTime: 1,
+          initiator: {type: 'other'},
+          redirectHasExtraInfo: false,
+          type: 'Document',
+          frameId: 'frame-1',
+          hasUserGesture: false,
+        });
+        mockCDPSession.emit('Network.responseReceived', {
+          requestId: id,
+          loaderId: id,
+          timestamp: 2,
+          type: 'Document',
+          response: {
+            ...baseResponse,
+            url: 'https://example.com/',
+            status: 200,
+            statusText: 'OK',
+            encodedDataLength: responseLen,
+          },
+          hasExtraInfo: false,
+          frameId: 'frame-1',
+        });
+        mockCDPSession.emit('Network.loadingFinished', {
+          requestId: id,
+          timestamp: 3,
+          encodedDataLength: finishedLen,
+        });
+      }
+
+      expect(lengthsOnResponse).toEqual([120, 120]);
+      expect(responses[0]!.encodedDataLength()).toBe(450);
+      expect(responses[1]!.encodedDataLength()).toBe(120);
+    });
+  });
+});

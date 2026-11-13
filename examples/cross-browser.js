@@ -1,22 +1,25 @@
-const puppeteer = require('puppeteer');
+/**
+ * @license
+ * Copyright 2024 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+import puppeteer from 'puppeteer';
 
 /**
  * To have Puppeteer fetch a Firefox binary for you, first run:
  *
- *  PUPPETEER_PRODUCT=firefox npm install
+ * npx puppeteer browsers install firefox
  *
  * To get additional logging about which browser binary is executed,
  * run this example as:
  *
- *   DEBUG=puppeteer:launcher NODE_PATH=../ node examples/cross-browser.js
+ * DEBUG=puppeteer:launcher NODE_PATH=../ node examples/cross-browser.js
  *
  * You can set a custom binary with the `executablePath` launcher option.
- *
- *
  */
 
 const firefoxOptions = {
-  product: 'firefox',
+  browser: 'firefox',
   extraPrefsFirefox: {
     // Enable additional Firefox logging from its protocol implementation
     // 'remote.log.level': 'Trace',
@@ -25,24 +28,22 @@ const firefoxOptions = {
   dumpio: true,
 };
 
-(async () => {
-  const browser = await puppeteer.launch(firefoxOptions);
+const browser = await puppeteer.launch(firefoxOptions);
 
-  const page = await browser.newPage();
-  console.log(await browser.version());
+const page = await browser.newPage();
+console.log(await browser.version());
 
-  await page.goto('https://news.ycombinator.com/');
+await page.goto('https://news.ycombinator.com/');
 
-  // Extract articles from the page.
-  const resultsSelector = '.storylink';
-  const links = await page.evaluate((resultsSelector) => {
-    const anchors = Array.from(document.querySelectorAll(resultsSelector));
-    return anchors.map((anchor) => {
-      const title = anchor.textContent.trim();
-      return `${title} - ${anchor.href}`;
-    });
-  }, resultsSelector);
-  console.log(links.join('\n'));
+// Extract articles from the page.
+const resultsSelector = '.titleline > a';
+const links = await page.evaluate(resultsSelector => {
+  const anchors = Array.from(document.querySelectorAll(resultsSelector));
+  return anchors.map(anchor => {
+    const title = anchor.textContent.trim();
+    return `${title} - ${anchor.href}`;
+  });
+}, resultsSelector);
+console.log(links.join('\n'));
 
-  await browser.close();
-})();
+await browser.close();
